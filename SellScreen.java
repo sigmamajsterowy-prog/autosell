@@ -8,24 +8,89 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class SellScreen extends Screen {
     private static final int ACCENT = 0xFF8B5CF6;
     private static final int PER_PAGE = 4;
     private static final int W = 340, H = 256;
 
+    private static class Entry {
+        String id;
+        Map<String, Integer> ench;
+        String label;
+    }
+
+    private List<Entry> entries;
     private int page = 0;
-    private String priceText = "400";
     private int left, top;
 
     public SellScreen() {
         super(Text.literal("AutoSell"));
     }
 
+    private List<Entry> buildEntries(SellConfig c) {
+        List<Entry> list = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        if (client != null && client.player != null) {
+            for (int i = 0; i < 36; i++) {
+                ItemStack s = client.player.getInventory().getStack(i);
+                if (s.isEmpty()) continue;
+                Entry e = new Entry();
+                e.id = ItemInfo.itemId(s);
+                e.ench = ItemInfo.enchants(s);
+                e.label = ItemInfo.describe(s);
+                if (seen.add(e.id + e.ench)) list.add(e);
+            }
+        }
+        // reguly dla przedmiotow, ktorych aktualnie nie masz
+        for (SellConfig.Rule r : c.rules) {
+            if (seen.add(r.item + r.enchants)) {
+                Entry e = new Entry();
+                e.id = r.item;
+                e.ench = r.enchants;
+                e.label = r.label;
+                list.add(e);
+            }
+        }
+        return list;
+    }
+
+    private SellConfig.Rule findRule(SellConfig c, Entry e) {
+        for (SellConfig.Rule r : c.rules) {
+            if (r.item.equals(e.id) && r.enchants.equals(e.ench)) return r;
+        }
+        return null;
+    }
+
+    private void setPrice(Entry e, String text) {
+        SellConfig c = SellConfig.get();
+        int price = 0;
+        try { price = Integer.parseInt(text); } catch (Exception ignored) {}
+        SellConfig.Rule r = findRule(c, e);
+        if (price > 0) {
+            if (r == null) {
+                r = new SellConfig.Rule();
+                r.item = e.id;
+                r.enchants = new LinkedHashMap<>(e.ench);
+                r.label = e.label;
+                c.rules.add(r);
+            }
+            r.price = price;
+        } else if (r != null) {
+            c.rules.remove(r);
+        }
+    }
+
     @Override
     protected void init() {
         SellConfig c = SellConfig.get();
+        if (entries == null) entries = buildEntries(c);
         left = width / 2 - W / 2;
         top = height / 2 - H / 2;
         int x = left + 14, fw = W - 28;
@@ -51,60 +116,28 @@ public class SellScreen extends Screen {
         });
         addDrawableChild(interval);
 
-        TextFieldWidget price = new TextFieldWidget(textRenderer, x + 96, top + 102, 80, 18, Text.empty());
-        price.setMaxLength(12);
-        price.setTextPredicate(s -> s.matches("\\d*"));
-        price.setText(priceText);
-        price.setChangedListener(s -> priceText = s);
-        addDrawableChild(price);
-
-        addDrawableChild(ButtonWidget.builder(Text.literal("+ Dodaj trzymany"), b -> addHeld())
-                .dimensions(x + 186, top + 101, fw - 186, 20).build());
-
-        // lista reguł
-        List<SellConfig.Rule> rules = c.rules;
-        int pages = Math.max(1, (rules.size() + PER_PAGE - 1) / PER_PAGE);
+        int pages = Math.max(1, (entries.size() + PER_PAGE - 1) / PER_PAGE);
         page = Math.min(page, pages - 1);
         for (int i = 0; i < PER_PAGE; i++) {
             int idx = page * PER_PAGE + i;
-            if (idx >= rules.size()) break;
-            final int fi = idx;
-            addDrawableChild(ButtonWidget.builder(Text.literal("X"), b -> {
-                        rules.remove(fi); SellConfig.save(); clearAndInit();
-                    }).dimensions(left + W - 14 - 20, top + 142 + i * 22, 20, 18).build());
+            if (idx >= entries.size()) break;
+            final Entry e = entries.get(idx);
+            SellConfig.Rule r = findRule(c, e);
+
+            TextFieldWidget price = new TextFieldWidget(textRenderer, left + W - 14 - 70, top + 142 + i * 22, 70, 18, Text.empty());
+            price.setMaxLength(9);
+            price.setTextPredicate(s -> s.matches("\\d*"));
+            price.setText(r == null ? "" : String.valueOf(r.price));
+            price.setChangedListener(s -> setPrice(e, s));
+            addDrawableChild(price);
         }
 
-        addDrawableChild(ButtonWidget.builder(Text.literal("<"), b -> { if (page > 0) { page--; clearAndInit(); } })
-                .dimensions(x, top + H - 26, 20, 18).build());
+        addDrawableChild(ButtonWidget.builder(Text.literal("<"), b -> {
+                    if (page > 0) { page--; clearAndInit(); }
+                }).dimensions(x, top + H - 26, 20, 18).build());
         addDrawableChild(ButtonWidget.builder(Text.literal(">"), b -> {
-                    if ((page + 1) * PER_PAGE < rules.size()) { page++; clearAndInit(); }
+                    if ((page + 1) * PER_PAGE < entries.size()) { page++; clearAndInit(); }
                 }).dimensions(x + 24, top + H - 26, 20, 18).build());
-    }
-
-    private void addHeld() {
-        if (client == null || client.player == null) return;
-        ItemStack s = client.player.getMainHandStack();
-        if (s.isEmpty()) {
-            client.player.sendMessage(Text.literal("[AutoSell] Trzymaj przedmiot w ręce.").formatted(Formatting.RED), false);
-            return;
-        }
-        int price;
-        try { price = Integer.parseInt(priceText); } catch (Exception e) { return; }
-        if (price <= 0) return;
-
-        String id = ItemInfo.itemId(s);
-        var ench = ItemInfo.enchants(s);
-        SellConfig c = SellConfig.get();
-        c.rules.removeIf(r -> r.item.equals(id) && r.enchants.equals(ench));
-
-        SellConfig.Rule r = new SellConfig.Rule();
-        r.item = id;
-        r.enchants = ench;
-        r.price = price;
-        r.label = ItemInfo.describe(s);
-        c.rules.add(r);
-        SellConfig.save();
-        clearAndInit();
     }
 
     @Override
@@ -125,25 +158,26 @@ public class SellScreen extends Screen {
 
         ctx.drawTextWithShadow(textRenderer, "KOMENDA  ({price} = cena)", x, top + 57, ACCENT);
         ctx.drawTextWithShadow(textRenderer, "CO ILE SEK.", x, top + 91, ACCENT);
-        ctx.drawTextWithShadow(textRenderer, "CENA", x + 96, top + 91, ACCENT);
-        ctx.drawTextWithShadow(textRenderer, "REGUŁY (trzymaj przedmiot i kliknij Dodaj)", x, top + 128, ACCENT);
+        ctx.drawTextWithShadow(textRenderer, "Wpisz cenę obok przedmiotu. Puste = nie wystawiaj.", x + 96, top + 107, 0x888888);
+        ctx.drawTextWithShadow(textRenderer, "PRZEDMIOTY W EKWIPUNKU", x, top + 128, ACCENT);
 
-        List<SellConfig.Rule> rules = SellConfig.get().rules;
-        if (rules.isEmpty()) {
-            ctx.drawTextWithShadow(textRenderer, "Brak reguł.", x, top + 146, 0xAAAAAA);
+        SellConfig c = SellConfig.get();
+        if (entries.isEmpty()) {
+            ctx.drawTextWithShadow(textRenderer, "Ekwipunek jest pusty.", x, top + 146, 0xAAAAAA);
         }
         for (int i = 0; i < PER_PAGE; i++) {
             int idx = page * PER_PAGE + i;
-            if (idx >= rules.size()) break;
-            SellConfig.Rule r = rules.get(idx);
-            String line = r.label + " → " + r.price;
-            line = textRenderer.trimToWidth(line, W - 28 - 26);
-            ctx.drawTextWithShadow(textRenderer, line, x, top + 146 + i * 22, 0xFFFFFF);
+            if (idx >= entries.size()) break;
+            Entry e = entries.get(idx);
+            boolean active = findRule(c, e) != null;
+            String line = textRenderer.trimToWidth(e.label, W - 28 - 70 - 8);
+            ctx.drawTextWithShadow(textRenderer, line, x, top + 147 + i * 22, active ? 0x55FF55 : 0xFFFFFF);
         }
 
-        int pages = Math.max(1, (rules.size() + PER_PAGE - 1) / PER_PAGE);
+        int pages = Math.max(1, (entries.size() + PER_PAGE - 1) / PER_PAGE);
         ctx.drawTextWithShadow(textRenderer, (page + 1) + "/" + pages, x + 52, top + H - 22, 0xAAAAAA);
-        ctx.drawTextWithShadow(textRenderer, "K = menu, J = wystaw trzymany", left + W - 14 - textRenderer.getWidth("K = menu, J = wystaw trzymany"), top + H - 22, 0x888888);
+        String hint = "K = menu, J = wystaw trzymany";
+        ctx.drawTextWithShadow(textRenderer, hint, left + W - 14 - textRenderer.getWidth(hint), top + H - 22, 0x888888);
     }
 
     @Override
