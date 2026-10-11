@@ -3,6 +3,7 @@ package pl.autosell;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 
@@ -18,7 +19,7 @@ public final class AutoSeller {
         ClientPlayerEntity p = mc.player;
         if (p == null) { delay = -1; return; }
 
-        // czekamy chwilę po zmianie slotu, żeby serwer wiedział co trzymamy
+        // czekamy chwilę po zmianie slotu / przeniesieniu przedmiotu
         if (delay >= 0) {
             if (delay == 0) { fire(mc); delay = -1; } else delay--;
             return;
@@ -26,24 +27,34 @@ public final class AutoSeller {
 
         SellConfig c = SellConfig.get();
         if (!c.enabled || mc.currentScreen != null) return;
+        if (p.currentScreenHandler != p.playerScreenHandler) return;
         if (--cooldown > 0) return;
 
-        for (int i = 0; i < 9; i++) {
+        // szukamy w calym ekwipunku: najpierw hotbar (0-8), potem plecak (9-35)
+        for (int i = 0; i < 36; i++) {
             ItemStack s = p.getInventory().getStack(i);
             for (SellConfig.Rule r : c.rules) {
-                if (r.matches(s)) {
+                if (!r.matches(s)) continue;
+
+                rule = r;
+                if (i < 9) {
                     slot = i;
-                    rule = r;
                     p.getInventory().selectedSlot = i;
-                    delay = 4;
-                    cooldown = Math.max(5, c.intervalSeconds) * 20;
-                    return;
+                } else {
+                    // przerzuc przedmiot z plecaka na aktualnie wybrany slot hotbara
+                    slot = p.getInventory().selectedSlot;
+                    mc.interactionManager.clickSlot(
+                            p.playerScreenHandler.syncId, i, slot, SlotActionType.SWAP, p);
                 }
+                delay = 4;
+                cooldown = Math.max(5, c.intervalSeconds) * 20;
+                return;
             }
         }
-        cooldown = 20; // nic do wystawienia, sprawdź za sekundę
+        cooldown = 20; // nic do wystawienia, sprawdz za sekunde
     }
 
+    /** Klawisz J: wystawia to, co trzymasz w rece (jesli pasuje do reguly). */
     public static void sellHeld(MinecraftClient mc) {
         ClientPlayerEntity p = mc.player;
         if (p == null) return;
